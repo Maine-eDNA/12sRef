@@ -1,0 +1,209 @@
+---
+title: "12s RNA reference library figuring"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+Erin's script:
+
+```{r eval = FALSE}
+############################################
+### Quick Maine-eDNA Vertebrate 12S Database
+### Erin Grey, 2022-09-14
+### Requires file: "maine_vert_species-YYYY-MM-DD.csv" - must have species binomial in a column labeled "source_binomial" 
+### Requires packages: taxize, rentrez, AnnotationBustR, msa, ape, DECIPHER
+### Requires other: Entrez API key
+### Notes: I created maine_vert_species-YYYY-MM-DD.csv list by merging lists from Harrison Goldspiel (New England vernal pool verts) and Renee Francolini (did not include Bacillus cereus reference, Homo sapiens, nor any of the mock species)
+#############################################
+
+#############################################
+## 01_HOUSEKEEPING
+#############################################
+rm(list = ls()) # clears the global memory
+setwd("C:/Users/erin.grey/Desktop/medna-refDB") # set local working directory
+library(taxize) #check taxonomy
+library(rentrez) #query ENTREZ databases and download accessions
+library(AnnotationBustR) #find longest accessions, slice genes from mitogenomes
+library(reutils)
+library(msa) #multiple sequence alignment algorithms ClustalW and Muscle
+library(ape) #convert fasta, fastq, etc.
+library(DECIPHER) #primer evaluation
+set_entrez_key("7c5ac035201a1835b5a81de1b74ec8613d08") #set your Entrez API key
+
+#############################################
+## 02_SPECIES List Import & Name Check
+#############################################
+DAT <- read.csv("maine_vert_species-2022-09-14.csv", header=TRUE) #load your species list
+NAMECHECK<- gnr_resolve(DAT$source_binomial, best_match_only = TRUE, canonical = TRUE, fields="all") # check animal species names using the Global Names Resolver from the Encyclopedia of Life
+BESTNAMES <- merge(DAT, NAMECHECK[,c("user_supplied_name", "submitted_name","matched_name2")], by.x=c("source_binomial"), by.y=c("user_supplied_name"), all.x=TRUE) #get the best name but keep previous names (fix misspellings, use most recently accepted, etc.)
+BESTNAMES$search_name <- ifelse(is.na(BESTNAMES$matched_name2), BESTNAMES$source_binomial, BESTNAMES$matched_name2) # use the check & corrected name if available, if not then use the original source name
+
+#############################################
+## 03_DEFINE Search Terms, Create Summary Database and Full Database - just doing 12S for now but can add others later
+#############################################
+data(mtDNAterms) #AnnotationBustR's list of synonyms for different loci 
+rRNA12S_synonyms <- mtDNAterms[mtDNAterms$Locus=="rRNA_12S",] #subset the 12S synonyms into a new data frame
+rRNA12S_synonyms$Terms <- paste0("OR ", rRNA12S_synonyms$Name, "[TITL]") # format for ENTREZ search terms
+rRNA12S_synonyms$Terms[1] <- paste0("AND (", rRNA12S_synonyms$Name[1], "[TITL]") # first term starts with "AND ("
+rRNA12S_synonyms$Terms[dim(rRNA12S_synonyms)[1]] <- paste0("OR ", rRNA12S_synonyms$Name[dim(rRNA12S_synonyms)[1]], "[TITL])") #last term ends with a ")"
+rRNA12_searchterm <- paste(as.vector(rRNA12S_synonyms$Terms), collapse=" ") # the big 'ole ENTREZ 12S search term
+
+# make a blank summary data frame to fill in
+BESTNAMES$n_accessions <- "na" #number of accessions total
+BESTNAMES$n_mitogenome <- "na" #number of mitogenome accessions
+BESTNAMES$n_12S <- "na" #number of 12S accessions
+BESTNAMES$n_12Svoucher <- "na" #number of vouchered 12S accessions
+BESTNAMES$ids_mitogenome <- "na" #mitogenome accession numbers
+BESTNAMES$ids_12S <- "na" #12S accession numbers
+BESTNAMES$ids_12Svoucher <- "na" #vouchered 12S accession numbers
+BESTNAMES$longest_12S_accession <- "na" #longest 12S accession number
+BESTNAMES$longest_12S_length <- "na" #length of longest 12S accession
+BESTNAMES$longest_12Svoucher_accession <- "na" #longest vouchered 12S accession number
+BESTNAMES$longest_12Svoucher_length <- "na" #length of longest vouchered 12S accession
+
+#############################################
+## 04_LOOP by Species & Search ENTREZ for Summary Database
+#############################################
+for (i in 1:dim(BESTNAMES)[1]){
+  #define search terms and search entrez
+  search_name <- paste0(BESTNAMES$search_name[i],"[ORGN]") #format species name for ENTREZ search
+  search_term <- paste(search_name, rRNA12_searchterm, collapse=" ") #concatenate species and 12S search terms into one search term
+  search_term_voucher <- paste(search_name, "AND voucher[TITL]",rRNA12_searchterm, collapse=" ") #concatenate species and vouchered 12S search terms into one search term
+  
+  accessions <- entrez_search(db="nucleotide", term <- search_name, retmax=999999) # search all species accessions
+  Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
+  
+  mitogenomes <- entrez_search(db="nucleotide", term <- paste(search_name, "AND mitochondrion[TITL] AND complete genome[TITL]"), retmax=999999) # search for species mitogenome accessions
+  Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
+  
+  rRNA12S <- entrez_search(db="nucleotide", term <- search_term, retmax=999999) # search all species 12S accessions
+  Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
+  
+  rRNA12Svoucher <- entrez_search(db="nucleotide", term <- search_term_voucher, retmax=999999) # search all species vouchered 12S accessions
+  Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
+  
+  # find longest 12S and vouchered 12S accession
+  longest_12S <- NULL
+  if(rRNA12S$count>0) {
+    longest_12S <- FindLongestSeq(rRNA12S$ids)
+  }
+  Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
+  longest_12Svoucher <- NULL
+  if(rRNA12Svoucher$count>0) {
+    longest_12Svoucher <- FindLongestSeq(rRNA12Svoucher$ids)
+  }
+  Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
+
+  # 4d update the blank summary data frame
+  BESTNAMES$n_accessions[i] <- accessions$count
+  BESTNAMES$n_mitogenome[i] <-mitogenomes$count
+  BESTNAMES$n_12S[i] <-rRNA12S$count
+  BESTNAMES$n_12Svoucher[i] <-rRNA12Svoucher$count
+  BESTNAMES$ids_mitogenome[i] <-paste(mitogenomes$ids, collapse="|")
+  BESTNAMES$ids_12S[i] <- paste(rRNA12S$ids, collapse="|")
+  BESTNAMES$ids_12Svoucher[i] <- paste(rRNA12Svoucher$ids, collapse="|")
+  #if there is a longest 12S accession put it in there
+  if(!is.null(longest_12S)) { 
+    BESTNAMES$longest_12S_accession[i] <- longest_12S$Accession[1]
+    BESTNAMES$longest_12S_length[i] <- longest_12S$Length[1]
+  }
+  #if there is a longest vouchered 12S put it in there
+  if(!is.null(longest_12Svoucher)) { 
+    BESTNAMES$longest_12Svoucher_accession[i] <- longest_12Svoucher$Accession[1]
+    BESTNAMES$longest_12Svoucher_length[i] <- longest_12Svoucher$Length[1]
+  }
+}
+#############################################
+##05_BUILD REFERENCE DATABASES
+#############################################
+BESTNAMES$consensus <- "na" # consensus sequences just go into summary data frame
+fullDB_list <- list() # a list of dataframes with all 12S accessions for each species
+# Loop Thru Species, Get 12S fastas, get Consensus Sequences
+for (i in 1:dim(BESTNAMES)[1]) {
+  seqs_all12S <- "na"
+  seqs_all12S_name <- "na"
+  fasta_all12S <- "na"
+  seq_name <- "na"
+  sequence <- "na"
+  seqs_all12S_dataframe <- "na"
+  MyAlignment <- "na"
+  MyConsensusSequence <- "na"
+  consensus_name <- "na"
+ 
+  #download all 12S accessions
+  if(BESTNAMES$n_12S[i]>0){
+    seqs_all12S <- entrez_fetch(db="nuccore", id=unlist(strsplit(BESTNAMES$ids_12S[i], split="\\|")), rettype="fasta") # get all the 12S accessions
+    seqs_all12S_name <- paste(BESTNAMES$search_name[i], "12S.fasta"); write(seqs_all12S, file=seqs_all12S_name) # formatting - write out the sequences 
+    fasta_all12S <- readDNAStringSet(seqs_all12S_name, format="fasta") #formatting - read them back in as fasta
+    seq_name <- names(fasta_all12S) #formatting
+    sequence <- paste(fasta_all12S) #formatting
+    seqs_all12S_dataframe <- data.frame(seq_name, sequence) #formatting
+    seqs_all12S_dataframe$search_name <- BESTNAMES$search_name[i]
+  }
+    ##align all accessions and get consensus sequence
+    if(BESTNAMES$n_12S[i]>1) {
+      MyAlignment <- msaClustalW(fasta_all12S) #Using Muscle, ClustalW, or ClustalOmega algorithms
+      MyConsensusSequence <- msaConsensusSequence(MyAlignment, type="Biostrings") #just choosing Biostrings consensus rules here to try it out
+      consensus_name <- paste0(">", BESTNAMES$search_name[i], " consensus")
+      MyConsensusSequence <- paste(consensus_name, MyConsensusSequence, sep="\n")
+      write(MyConsensusSequence, file=paste(search_name, "12S consensus.fasta"))
+     }
+  
+  #update FullDB and consensus
+  fullDB_list[[i]] <- seqs_all12S_dataframe
+  BESTNAMES$consensus[i] <- MyConsensusSequence
+  
+  Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
+}
+
+for (i in 1:dim(BESTNAMES)[1]) {
+  fasta_all12S <- "na"
+  seq_name <-  "na"
+  sequence <-  "na"
+  seqs_all12S_dataframe <-  "na"
+  seqs_all12S_dataframe$search_name <-  "na"
+  MyConsensusSequence <-  "na"
+  
+  if(BESTNAMES$n_12S[i]==1){
+    fasta_all12S <- readDNAStringSet(paste(BESTNAMES$search_name[i], "12S.fasta"), format="fasta") #read them back in as fasta
+    seq_name <- names(fasta_all12S) #formatting
+    sequence <- paste(fasta_all12S) #formatting
+    seqs_all12S_dataframe <- data.frame(seq_name, sequence) #formatting
+    seqs_all12S_dataframe$search_name <- BESTNAMES$search_name[i]
+    MyConsensusSequence <- paste(seq_name, sequence, sep="\n")
+    
+    #update FullDB and consensus
+    fullDB_list[[i]] <- seqs_all12S_dataframe
+    BESTNAMES$consensus[i] <- MyConsensusSequence
+  }
+} 
+#############################################
+##06_WRITE FILES OUT
+#############################################
+fullDB_df <- do.call("rbind", fullDB_list)
+write.csv(BESTNAMES, "summary_medna_12Svertebrate.csv", row.names=FALSE)
+write.csv(fullDB_df, "full_medna_12Svertebrate.csv", row.names=FALSE)
+
+############ TESTING STUFF - don't run
+###########################################################
+##Create the "Single Reference" Database: use longest 12S reference available (prioritize full vouchered 12S, full 12S, other)
+REFDB_singlebest<- BESTNAMES 
+REFDB$reference_fasta <- "na"
+REFDB$reference_type <- "na"
+
+
+for (i in 1:dim(REFDB)[1]) { # Erin you should avoid loops in R!
+  if (REFDB$reference_accession[1] != "na"){
+    REFDB$reference_fasta[i] <- entrez_fetch(db="nuccore", id=REFDB$reference_accession[1], rettype="fasta")
+  }
+}
+
+## Extracting 12S from mitogenomes
+#temp <- entrez_fetch(db="nuccore", id=836643104, rettype="acc") #get the accession number
+#mito.12Sseq <-AnnotationBust(Accessions=NC_027236.1, Terms=rRNA12S_synonyms) 
+
+
+```
