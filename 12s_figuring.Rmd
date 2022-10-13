@@ -7,7 +7,35 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
 ```
 
-Erin's script:
+# Workflow-in-Progress
+
+## Navigation and Using RMarkdown
+
+Since this workflow is likely to get very long, it can be helpful to use headers to separate and jump between sections. A header is any line of text outside of a code chunk that is prefaced by one or more # symbols. The more # symbols, the smaller the header will be. In RMarkdown, the placement of a header also creates a toggle button next to that header on the left with the line numbers. Collapsing or expanding this toggle will collapse or expand all text, code chunks, and sub-headers under that header, and can be a quick way to jump between sections. 
+
+There is also the "Outline" button on the upper left of the file window which will expand a navigation bar of the defined headers and allow jumping between sections without having to scroll or collapse sections of the file.
+
+
+RMarkdown separates code from text using code chunks, meaning anything outside of a code chunk is read using markdown formatting and anything inside is read using the language specified in the code chunk.
+
+To create a code chunk, you can use Ctrl+Alt+I, the green "Insert a new code chunk" button in the upper left of the file window, or type the following:
+
+```{r}
+
+```
+
+Anything inside the gravemarks will be read as code. To add a label or descriptor to a code chunk, simply type the label without spaces after 'r'
+
+```{r example_label}
+
+```
+
+For more information on RMarkdown, [dataquest.io](https://www.dataquest.io/blog/r-markdown-guide-cheatsheet/) has a good cheat sheet.
+
+
+## Collecting Existing Code
+
+### Erin's script:
 
 ```{r eval = FALSE}
 ############################################
@@ -207,3 +235,37 @@ for (i in 1:dim(REFDB)[1]) { # Erin you should avoid loops in R!
 
 
 ```
+
+### Abbagadabba Functions
+Add functions and bits from abbagadabba that we'd like to include here
+
+
+### Other desired pre-built functions
+If there are any other scripts that already exist that we'd like to use, paste those here (after logging an issue). Make sure to record their source and appropriate citation, especially if these are fully external to Maine eDNA
+
+## Workflow Outline
+The following steps outline is purely a guide suggestion of layout and not meant to be restrictive or the end-all-be-all of organization. Expand or adjust code and rearrange sections as needed, just log the changes in issues and comments and do your best to make sure any moves won't have negative downstream effects in terms of code order
+
+## Step 0: Installing and Initializing Packages, Apps, and Other Required Tools
+Put install/library checks of packages and anything else here (including non-data files needed to run a function) and please comment what the package or tool is doing.
+
+## Step 1: Importing/Identifying Inputs
+Add functions here to import csv lists (or other format) of species lists or other import-aligned functions
+
+## Step 2: Cleaning Input
+If we want any built in cleaning functions or name correcters, these should be next
+
+## Step 3: Prepare GenBank Search
+Creating the 12S search terms, voucher regular expression search, etc.
+
+## Step 4: GenBank Searches
+
+## Step 5: Filter Search Results
+De-duplicate results and trim based on bp length
+
+## Step 6: Create Taxonomy Dataframe
+
+## Step 7: Create Sequence Files
+
+## Step 8: Neighbor-Joining Phylogeny
+
