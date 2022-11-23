@@ -6,266 +6,436 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
 ```
-
-# Workflow-in-Progress
-
-## Navigation and Using RMarkdown
-
+### Navigation and Using RMarkdown
 Since this workflow is likely to get very long, it can be helpful to use headers to separate and jump between sections. A header is any line of text outside of a code chunk that is prefaced by one or more # symbols. The more # symbols, the smaller the header will be. In RMarkdown, the placement of a header also creates a toggle button next to that header on the left with the line numbers. Collapsing or expanding this toggle will collapse or expand all text, code chunks, and sub-headers under that header, and can be a quick way to jump between sections. 
 
 There is also the "Outline" button on the upper left of the file window which will expand a navigation bar of the defined headers and allow jumping between sections without having to scroll or collapse sections of the file.
 
-
 RMarkdown separates code from text using code chunks, meaning anything outside of a code chunk is read using markdown formatting and anything inside is read using the language specified in the code chunk.
 
 To create a code chunk, you can use Ctrl+Alt+I, the green "Insert a new code chunk" button in the upper left of the file window, or type the following:
-
-```{r}
+```{r sample_chunk}
 
 ```
-
 Anything inside the gravemarks will be read as code. To add a label or descriptor to a code chunk, simply type the label without spaces after 'r'
-
-```{r example_label}
-
-```
-
 For more information on RMarkdown, [dataquest.io](https://www.dataquest.io/blog/r-markdown-guide-cheatsheet/) has a good cheat sheet.
 
+### Workflow-in-Progress
+OVERVIEW OF CHUNKS
+$define_variables - YOU MUST ENTER THESE IN THE SET_VARIABLES CHUNK, get these in order before you run this program
+    *entrez API key - get one here https://ncbiinsights.ncbi.nlm.nih.gov/2017/11/02/new-api-keys-for-the-e-utilities/
+    *species list (must have species names in column labeled exactly "source_binomial")          
+    *target locus (choices: ATP6, ATP8, COI, COII, COIII, CYTB, D_loop, rRNA_12S, rRNA_16S, & all NDS & tRNAs)
+    *primer sequences in 5'-3' direction
+    *reference sequence in 5'-3' direction
+    *output folder name - make it unique
+$load_packages_and_terms - loads the required packages and defines search terms
+$name_check - uses taxize package to check and correct the input species names
+$entrez_search - uses entrez_search() to identify target locus accessions and mitogenomes for each species
+$scrape_targets - uses entrez_fetch to downoad target locus fastas
+$scrape_mitogenomes - uses readGenBank to scrape target locus from mitogenomes
+$remove duplicates - finds, remembers, and removes duplicate sequences
+$align_unique_seqs - aligns scraped sequences to reference sequence (using pairwiseAlignment) and to primers (using matchPattern) and return various statistics - - I don't love this yet
+$update_species_summary - summarizes target sequence availability, primer alignments, etc. by species
 
-## Collecting Existing Code
+    
+```{r define_variables}
+entrez_key <- "7c5ac035201a1835b5a81de1b74ec8613d08" #GET YOUR OWN ENTREZ KEY 
+species_list <- "data/maine_vert_subset.csv" 
+locus = "rRNA_12S" 
+primer_forward <- "GTCGGTAAAACTCGTGCCAGC" # MiFish-U-F 
+primer_reverse <- "CATAGTGGGGTATCTAATCCCAGTTTG" # MiFish-U-R
+ref_seq <- "GCCGGTAAAACTCGTGCCAGCAACCGCGGTTAAACGAGAGGCTCTAGTTGATATACTACGGCGTAAAGGGTGGTTAAGGAACAATGTAAAATAAAGCCAAACGGCCCTTTAACTGTTATACGCTTTTAGATGCTAGAGGCCCAAACACGAAAGTAGCTTTAAATTAATTACCTGAACCCACGAAAGCTAAGAAACAAACTGGGATTAGATACCCCACTATGC" #zebrafish MiFish reference
+output_folder <- "test_MaineVerts_MiFish-2022-11-22"
+```
 
-### Erin's script:
-
-```{r eval = FALSE}
-############################################
-### Quick Maine-eDNA Vertebrate 12S Database
-### Erin Grey, 2022-09-14
-### Requires file: "maine_vert_species-YYYY-MM-DD.csv" - must have species binomial in a column labeled "source_binomial" 
-### Requires packages: taxize, rentrez, AnnotationBustR, msa, ape, DECIPHER
-### Requires other: Entrez API key
-### Notes: I created maine_vert_species-YYYY-MM-DD.csv list by merging lists from Harrison Goldspiel (New England vernal pool verts) and Renee Francolini (did not include Bacillus cereus reference, Homo sapiens, nor any of the mock species)
-#############################################
-
-#############################################
-## 01_HOUSEKEEPING
-#############################################
-rm(list = ls()) # clears the global memory
-setwd("C:/Users/erin.grey/Desktop/medna-refDB") # set local working directory
-library(taxize) #check taxonomy
-library(rentrez) #query ENTREZ databases and download accessions
-library(AnnotationBustR) #find longest accessions, slice genes from mitogenomes
-library(reutils)
+```{r load_packages_and_terms}
+library(taxize) #checks taxonomy
+library(rentrez) #queries ENTREZ databases and downloads accessions
+library(AnnotationBustR) #finds longest accessions, slice genes from mitogenomes
+library(reutils) #oter packages need it
 library(msa) #multiple sequence alignment algorithms ClustalW and Muscle
 library(ape) #convert fasta, fastq, etc.
-library(DECIPHER) #primer evaluation
-set_entrez_key("7c5ac035201a1835b5a81de1b74ec8613d08") #set your Entrez API key
+library(genbankr) #parse genbank files
+library(ggplot2) #plots
 
-#############################################
-## 02_SPECIES List Import & Name Check
-#############################################
-DAT <- read.csv("maine_vert_species-2022-09-14.csv", header=TRUE) #load your species list
-NAMECHECK<- gnr_resolve(DAT$source_binomial, best_match_only = TRUE, canonical = TRUE, fields="all") # check animal species names using the Global Names Resolver from the Encyclopedia of Life
-BESTNAMES <- merge(DAT, NAMECHECK[,c("user_supplied_name", "submitted_name","matched_name2")], by.x=c("source_binomial"), by.y=c("user_supplied_name"), all.x=TRUE) #get the best name but keep previous names (fix misspellings, use most recently accepted, etc.)
-BESTNAMES$search_name <- ifelse(is.na(BESTNAMES$matched_name2), BESTNAMES$source_binomial, BESTNAMES$matched_name2) # use the check & corrected name if available, if not then use the original source name
+set_entrez_key(entrez_key) #set the Entrez API key
+a01_INPUT <- read.csv(species_list, header=TRUE) # load the species list
+primer_forward <- DNAString(primer_forward) # format
+primer_reverse <- DNAString(primer_reverse) # format
+ref_seq <- DNAString(ref_seq) # format
+dir.create(output_folder)
 
-#############################################
-## 03_DEFINE Search Terms, Create Summary Database and Full Database - just doing 12S for now but can add others later
-#############################################
-data(mtDNAterms) #AnnotationBustR's list of synonyms for different loci 
-rRNA12S_synonyms <- mtDNAterms[mtDNAterms$Locus=="rRNA_12S",] #subset the 12S synonyms into a new data frame
-rRNA12S_synonyms$Terms <- paste0("OR ", rRNA12S_synonyms$Name, "[TITL]") # format for ENTREZ search terms
-rRNA12S_synonyms$Terms[1] <- paste0("AND (", rRNA12S_synonyms$Name[1], "[TITL]") # first term starts with "AND ("
-rRNA12S_synonyms$Terms[dim(rRNA12S_synonyms)[1]] <- paste0("OR ", rRNA12S_synonyms$Name[dim(rRNA12S_synonyms)[1]], "[TITL])") #last term ends with a ")"
-rRNA12_searchterm <- paste(as.vector(rRNA12S_synonyms$Terms), collapse=" ") # the big 'ole ENTREZ 12S search term
+### get reverse complements of primers, etc.
+primer_forward_rc <- reverseComplement(primer_forward) #reverse complement of forward primer
+primer_reverse_rc <- reverseComplement(primer_reverse) #reverse complement of reverse primer
+ref_seq_length <- nchar(ref_seq) # length of the reference sequence
+ref_seq_rc <- reverseComplement(ref_seq) # reverse complement of reference sequence
 
-# make a blank summary data frame to fill in
-BESTNAMES$n_accessions <- "na" #number of accessions total
-BESTNAMES$n_mitogenome <- "na" #number of mitogenome accessions
-BESTNAMES$n_12S <- "na" #number of 12S accessions
-BESTNAMES$n_12Svoucher <- "na" #number of vouchered 12S accessions
-BESTNAMES$ids_mitogenome <- "na" #mitogenome accession numbers
-BESTNAMES$ids_12S <- "na" #12S accession numbers
-BESTNAMES$ids_12Svoucher <- "na" #vouchered 12S accession numbers
-BESTNAMES$longest_12S_accession <- "na" #longest 12S accession number
-BESTNAMES$longest_12S_length <- "na" #length of longest 12S accession
-BESTNAMES$longest_12Svoucher_accession <- "na" #longest vouchered 12S accession number
-BESTNAMES$longest_12Svoucher_length <- "na" #length of longest vouchered 12S accession
-
-#############################################
-## 04_LOOP by Species & Search ENTREZ for Summary Database
-#############################################
-for (i in 1:dim(BESTNAMES)[1]){
-  #define search terms and search entrez
-  search_name <- paste0(BESTNAMES$search_name[i],"[ORGN]") #format species name for ENTREZ search
-  search_term <- paste(search_name, rRNA12_searchterm, collapse=" ") #concatenate species and 12S search terms into one search term
-  search_term_voucher <- paste(search_name, "AND voucher[TITL]",rRNA12_searchterm, collapse=" ") #concatenate species and vouchered 12S search terms into one search term
-  
-  accessions <- entrez_search(db="nucleotide", term <- search_name, retmax=999999) # search all species accessions
-  Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
-  
-  mitogenomes <- entrez_search(db="nucleotide", term <- paste(search_name, "AND mitochondrion[TITL] AND complete genome[TITL]"), retmax=999999) # search for species mitogenome accessions
-  Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
-  
-  rRNA12S <- entrez_search(db="nucleotide", term <- search_term, retmax=999999) # search all species 12S accessions
-  Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
-  
-  rRNA12Svoucher <- entrez_search(db="nucleotide", term <- search_term_voucher, retmax=999999) # search all species vouchered 12S accessions
-  Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
-  
-  # find longest 12S and vouchered 12S accession
-  longest_12S <- NULL
-  if(rRNA12S$count>0) {
-    longest_12S <- FindLongestSeq(rRNA12S$ids)
-  }
-  Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
-  longest_12Svoucher <- NULL
-  if(rRNA12Svoucher$count>0) {
-    longest_12Svoucher <- FindLongestSeq(rRNA12Svoucher$ids)
-  }
-  Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
-
-  # 4d update the blank summary data frame
-  BESTNAMES$n_accessions[i] <- accessions$count
-  BESTNAMES$n_mitogenome[i] <-mitogenomes$count
-  BESTNAMES$n_12S[i] <-rRNA12S$count
-  BESTNAMES$n_12Svoucher[i] <-rRNA12Svoucher$count
-  BESTNAMES$ids_mitogenome[i] <-paste(mitogenomes$ids, collapse="|")
-  BESTNAMES$ids_12S[i] <- paste(rRNA12S$ids, collapse="|")
-  BESTNAMES$ids_12Svoucher[i] <- paste(rRNA12Svoucher$ids, collapse="|")
-  #if there is a longest 12S accession put it in there
-  if(!is.null(longest_12S)) { 
-    BESTNAMES$longest_12S_accession[i] <- longest_12S$Accession[1]
-    BESTNAMES$longest_12S_length[i] <- longest_12S$Length[1]
-  }
-  #if there is a longest vouchered 12S put it in there
-  if(!is.null(longest_12Svoucher)) { 
-    BESTNAMES$longest_12Svoucher_accession[i] <- longest_12Svoucher$Accession[1]
-    BESTNAMES$longest_12Svoucher_length[i] <- longest_12Svoucher$Length[1]
-  }
-}
-#############################################
-##05_BUILD REFERENCE DATABASES
-#############################################
-BESTNAMES$consensus <- "na" # consensus sequences just go into summary data frame
-fullDB_list <- list() # a list of dataframes with all 12S accessions for each species
-# Loop Thru Species, Get 12S fastas, get Consensus Sequences
-for (i in 1:dim(BESTNAMES)[1]) {
-  seqs_all12S <- "na"
-  seqs_all12S_name <- "na"
-  fasta_all12S <- "na"
-  seq_name <- "na"
-  sequence <- "na"
-  seqs_all12S_dataframe <- "na"
-  MyAlignment <- "na"
-  MyConsensusSequence <- "na"
-  consensus_name <- "na"
- 
-  #download all 12S accessions
-  if(BESTNAMES$n_12S[i]>0){
-    seqs_all12S <- entrez_fetch(db="nuccore", id=unlist(strsplit(BESTNAMES$ids_12S[i], split="\\|")), rettype="fasta") # get all the 12S accessions
-    seqs_all12S_name <- paste(BESTNAMES$search_name[i], "12S.fasta"); write(seqs_all12S, file=seqs_all12S_name) # formatting - write out the sequences 
-    fasta_all12S <- readDNAStringSet(seqs_all12S_name, format="fasta") #formatting - read them back in as fasta
-    seq_name <- names(fasta_all12S) #formatting
-    sequence <- paste(fasta_all12S) #formatting
-    seqs_all12S_dataframe <- data.frame(seq_name, sequence) #formatting
-    seqs_all12S_dataframe$search_name <- BESTNAMES$search_name[i]
-  }
-    ##align all accessions and get consensus sequence
-    if(BESTNAMES$n_12S[i]>1) {
-      MyAlignment <- msaClustalW(fasta_all12S) #Using Muscle, ClustalW, or ClustalOmega algorithms
-      MyConsensusSequence <- msaConsensusSequence(MyAlignment, type="Biostrings") #just choosing Biostrings consensus rules here to try it out
-      consensus_name <- paste0(">", BESTNAMES$search_name[i], " consensus")
-      MyConsensusSequence <- paste(consensus_name, MyConsensusSequence, sep="\n")
-      write(MyConsensusSequence, file=paste(search_name, "12S consensus.fasta"))
-     }
-  
-  #update FullDB and consensus
-  fullDB_list[[i]] <- seqs_all12S_dataframe
-  BESTNAMES$consensus[i] <- MyConsensusSequence
-  
-  Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
-}
-
-for (i in 1:dim(BESTNAMES)[1]) {
-  fasta_all12S <- "na"
-  seq_name <-  "na"
-  sequence <-  "na"
-  seqs_all12S_dataframe <-  "na"
-  seqs_all12S_dataframe$search_name <-  "na"
-  MyConsensusSequence <-  "na"
-  
-  if(BESTNAMES$n_12S[i]==1){
-    fasta_all12S <- readDNAStringSet(paste(BESTNAMES$search_name[i], "12S.fasta"), format="fasta") #read them back in as fasta
-    seq_name <- names(fasta_all12S) #formatting
-    sequence <- paste(fasta_all12S) #formatting
-    seqs_all12S_dataframe <- data.frame(seq_name, sequence) #formatting
-    seqs_all12S_dataframe$search_name <- BESTNAMES$search_name[i]
-    MyConsensusSequence <- paste(seq_name, sequence, sep="\n")
-    
-    #update FullDB and consensus
-    fullDB_list[[i]] <- seqs_all12S_dataframe
-    BESTNAMES$consensus[i] <- MyConsensusSequence
-  }
-} 
-#############################################
-##06_WRITE FILES OUT
-#############################################
-fullDB_df <- do.call("rbind", fullDB_list)
-write.csv(BESTNAMES, "summary_medna_12Svertebrate.csv", row.names=FALSE)
-write.csv(fullDB_df, "full_medna_12Svertebrate.csv", row.names=FALSE)
-
-############ TESTING STUFF - don't run
-###########################################################
-##Create the "Single Reference" Database: use longest 12S reference available (prioritize full vouchered 12S, full 12S, other)
-REFDB_singlebest<- BESTNAMES 
-REFDB$reference_fasta <- "na"
-REFDB$reference_type <- "na"
-
-
-for (i in 1:dim(REFDB)[1]) { # Erin you should avoid loops in R!
-  if (REFDB$reference_accession[1] != "na"){
-    REFDB$reference_fasta[i] <- entrez_fetch(db="nuccore", id=REFDB$reference_accession[1], rettype="fasta")
-  }
-}
-
-## Extracting 12S from mitogenomes
-#temp <- entrez_fetch(db="nuccore", id=836643104, rettype="acc") #get the accession number
-#mito.12Sseq <-AnnotationBust(Accessions=NC_027236.1, Terms=rRNA12S_synonyms) 
-
+## create ENTREZ Search terms
+data(mtDNAterms) #AnnotationBustR's list of synonyms for different loci
+more_12Ssynonyms <- data.frame(Locus="rRNA_12S", Type="rRNA", Name= "small ribosomal RNA subunit RNA") # other synonyms that we find go here and get added to AnnotationBustR's list
+mtDNAterms <- rbind(mtDNAterms, more_12Ssynonyms) #format
+target_locus_synonyms <- mtDNAterms[mtDNAterms$Locus==locus,] #the target synonyms
+target_locus_synonyms$Terms <- 
+    paste0("OR ", target_locus_synonyms$Name, "[TITL]") # format for ENTREZ search terms
+target_locus_synonyms$Terms[1] <- 
+    paste0("AND (", target_locus_synonyms$Name[1], "[TITL]") # first term starts with "AND ("
+target_locus_synonyms$Terms[dim(target_locus_synonyms)[1]] <- 
+    paste0("OR ",   target_locus_synonyms$Name[dim(target_locus_synonyms)[1]], "[TITL])") #last term ends with a ")"
+target_locus_searchterm <- paste(as.vector(target_locus_synonyms$Terms), collapse=" ") # the big ENTREZ search term
 
 ```
 
-### Abbagadabba Functions
-Add functions and bits from abbagadabba that we'd like to include here
+```{r name_check}
+a02_NAMECHECK <- gnr_resolve(a01_INPUT$source_binomial, best_match_only = TRUE, canonical = TRUE, fields="all") # check animal species names using the Global Names Resolver from the Encyclopedia of Life
+a03_BESTNAMES <- merge(a01_INPUT, a02_NAMECHECK[,c("user_supplied_name", "submitted_name","matched_name2")], by.x=c("source_binomial"), by.y=c("user_supplied_name"), all.x=TRUE) #get the best name but keep previous names (fix misspellings, use most recently accepted, etc.)
+a03_BESTNAMES$search_name <- ifelse(is.na(a03_BESTNAMES$matched_name2), a03_BESTNAMES$source_binomial, a03_BESTNAMES$matched_name2) # use the check & corrected name if available, if not then use the original source name
+write.csv(a02_NAMECHECK, file.path(output_folder, "a02_NAMECHECK.csv"), row.names=FALSE)
+write.csv(a03_BESTNAMES, file.path(output_folder, "a03_BESTNAMES_v1.csv"), row.names=FALSE)
+```
+
+```{r entrez_search}
+a03_BESTNAMES$n_mitogenome <- "na" #number of mitogenome accessions
+a03_BESTNAMES$n_target <- "na" #number of target accessions
+a03_BESTNAMES$ids_mitogenome <- "na" #mitogenome GI numbers
+a03_BESTNAMES$ids_target <- "na" #target accession GI numbers
+
+#search ENTREZ nucleotide database ("nucleotide"="nuccore" database)
+for (i in 1:dim(a03_BESTNAMES)[1]){
+  print(i) #counter
+  # define search terms for species
+  search_name <- paste0(a03_BESTNAMES$search_name[i],"[ORGN]") #format species name for ENTREZ search
+  search_term <- paste(paste0(a03_BESTNAMES$search_name[i],"[ORGN]"), target_locus_searchterm, collapse=" ") #concatenate species and 12S search terms into one search term
+  
+  # search genbank for all accessions, mitogenomes, and target loci accessions
+  mitogenomes <- entrez_search(db="nucleotide", term <- paste(search_name, "AND mitochondrion[TITL] AND complete genome[TITL]"), retmax=999999) # search for species mitogenome accessions
+   Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
+  targets <- entrez_search(db="nucleotide", term <- search_term, retmax=999999) # search all species 12S accessions
+   Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
+
+  # update the the BESTNAMES dataframe of all accession types and associated ids (= GI numbers)
+  a03_BESTNAMES$n_mitogenome[i] <-mitogenomes$count
+  a03_BESTNAMES$n_target[i] <-targets$count
+  a03_BESTNAMES$ids_mitogenome[i] <-paste(mitogenomes$ids, collapse="|")
+  a03_BESTNAMES$ids_target[i] <- paste(targets$ids, collapse="|")
+  
+  # reset loop variables
+  mitogenomes <- "na"
+  targets <- "na"
+  search_name <- "na"
+  search_term <- "na"
+}
+write.csv(a03_BESTNAMES, file.path(output_folder, "a03_BESTNAMES_v2.csv"), row.names = FALSE) # write out the mitogenome and target accessions for each species
+```
+
+```{r scrape_targets}
+a04_REFDB <- data.frame(seq_header=NA, sequence=NA, seq_accession=NA, type=NA, species=NA) #create the database skeleton
+
+# add target accession sequences to database
+for (j in 1:dim(a03_BESTNAMES)[1]){ #for every good species name
+  print(j) #counter
+  if (a03_BESTNAMES$n_target[j]>0 && a03_BESTNAMES$n_target[j]<500) { # scrape GenBank target sequences if available, but don't do Aythya affinis (Lesser Scaup) because bc server doesn't allow this
+    seqs_target <- entrez_fetch(db="nuccore", id=c(unlist(strsplit(a03_BESTNAMES$ids_target[j], split="\\|"))), rettype="fasta") # fetch all the sequences from Genbank
+    write(seqs_target, file.path(output_folder, paste(a03_BESTNAMES$search_name[j], paste0(locus, ".fasta")))) # formatting - write out the sequences 
+    fasta_target <- readDNAStringSet(file.path(output_folder, paste(a03_BESTNAMES$search_name[j], paste0(locus, ".fasta"))), format="fasta") #formatting - read them back in as fasta
+    seqs_target_accessions <- entrez_fetch(db="nuccore", id=unlist(strsplit(a03_BESTNAMES$ids_target[j], split="\\|")), rettype="acc") # get all the 12S accession numbers
+    seq_header <- names(fasta_target) #formatting
+    sequence <- paste(fasta_target) #formatting
+    seq_accession <- unlist(strsplit(seqs_target_accessions, split="\n")) # formatting
+    tempDB <- data.frame(seq_header, sequence, seq_accession, type="accession", species=a03_BESTNAMES$search_name[j]) # make a temporary database with all sequences, their header, accession number, etc.
+    a04_REFDB <- rbind(a04_REFDB, tempDB) # append temporary database to the full database
+        # reset loop variables
+    seqs_target <- "na"
+    fasta_target <- "na"
+    seqs_target_accessions <- "na"
+    seq_header <- "na"
+    sequence <- "na"
+    seq_accession <- "na"
+    tempDB  <- "na"
+    }
+} 
+```
+
+```{r scrape_mitogenomes}
+# add mitogenome scrapes to database (skip Canis lupus 151, Hirundo rustica 358)
+a03_BESTNAMES$n_mitogenome <- as.numeric(a03_BESTNAMES$n_mitogenome) #format
+a03_BESTNAMES$n_target <- as.numeric(a03_BESTNAMES$n_target) #format
+
+for (k in 1:dim(a03_BESTNAMES)[1]) { #for every good species name
+  print(k) #counter
+  if (a03_BESTNAMES$n_mitogenome[k]>0 && a03_BESTNAMES$n_mitogenome[k]<150) { #scrape Genbank mitogenomes if available, skip species with lots of mitogenomes bc server doesn't allow this
+    mito_ids <- unlist(strsplit(a03_BESTNAMES$ids_mitogenome[k], split="\\|")) # format mitogenome ids
+    mito_accessions <- entrez_fetch(mito_ids, db="nuccore", rettype="acc") # find the accession number for each mitogenome id
+    mito_accessions <- unlist(strsplit(mito_accessions, split="\n")) # format accession numbers
+      for (m in 1:length(mito_accessions)){ # loop through and scrape each mitogenome accession
+        gb <- readGenBank(GBAccession(mito_accessions[m])) # get the Genbank annotation for accession 
+        target_feature <- which(otherFeatures(gb)$product %in% as.character(target_locus_synonyms$Name)) # find target annotation metadata (note: use otherFeatures for for rRNAs, tRNAs, etc. and use genes(gb) for genes like COI, CYTB, NADH, etc.)
+        new_row <- c(paste("Unparsed mitochondrion", mito_accessions[m], sep=" "), "na", mito_accessions[m], "scrape", species=a03_BESTNAMES$search_name[k])
+        if(length(target_feature) > 0) { # if target feature is found in the parsed mitochondrial genome, find the sequence, otherwise say that its unparsed
+          target_range <- otherFeatures(gb)@ranges[target_feature] #extract the target range information
+          target_strand <-  otherFeatures(gb)@strand[target_feature] #extract the target strand information (+ or -)
+          target_seq <- subseq(getSeq(gb), start=target_range@start, width=target_range@width) #scrape the genome for target
+          scrapedseq_binomial <- names(target_seq) #get the binomial name
+          scraped_seq <- paste(target_seq) #format
+          scraped_range <- paste(target_range) #format
+          new_row <- c(paste(names(target_seq),"mitochondrion", mito_accessions[m], sep=" "), paste(target_seq), mito_accessions[m], "scrape", species=a03_BESTNAMES$search_name[k])
+        }
+        a04_REFDB <- rbind(a04_REFDB, new_row) # update the database
+    
+        # reset loop variables
+        rm(gb, target_feature, target_strand, target_seq, scrapedseq_binomial, scraped_seq, scraped_range, new_row)
+        
+        } # close m loop (each "m" accession m per species "k")
+    } # close species k with mitogenomes if statement
+  # reset loop variables
+  rm(mito_ids, mito_accessions)
+} # close for each species k loop
+
+a04_REFDB <- a04_REFDB[-1,] #format - remove the top row of NAs
+write.csv(a04_REFDB, file.path(output_folder, "a04_REFDB.csv"), row.names=FALSE)
+```
+
+```{r remove_duplicates}
+a05_UNIQUEDB <- a04_REFDB[!duplicated(a04_REFDB$sequence),] #remove duplicates
+for (i in  1:dim(a05_UNIQUEDB)[1]){ # for every row in the unique db file
+  dups <- subset(a04_REFDB, sequence == a05_UNIQUEDB$sequence[i]) # find identical sequences in the fill db file 
+  a05_UNIQUEDB$duplicate_accessions[i] <- paste(dups$seq_accession, collapse = "|") # paste all those accessions together into a new unique db field
+  a05_UNIQUEDB$duplicate_species[i] <- paste(dups[!duplicated(dups$species),"species"], collapse = "|")
+}
+
+write.csv(a05_UNIQUEDB, file.path(output_folder, "a05_UniqueRefDB.csv"), row.names=FALSE)
+```
+
+```{r align_unique_seqs}
+rownames(a05_UNIQUEDB) <- 1:dim(a05_UNIQUEDB)[1] #format
+a05_UNIQUEDB$fasta <- paste(paste0(">",a05_UNIQUEDB$seq_header), a05_UNIQUEDB$sequence, sep="\n") #format fastas
+write(as.character(a05_UNIQUEDB$fasta), file.path(output_folder,"db_seqs.fasta")) # formatting - write out the sequences 
+target_fastas <- readDNAStringSet(file.path(output_folder, "db_seqs.fasta"), format="fasta") #formatting - read them back in as fasta
+
+# create columns for different alignment variables
+a05_UNIQUEDB$align_pover <- "NA"
+a05_UNIQUEDB$align_pid <- "NA"
+a05_UNIQUEDB$align_pover_rc <- "NA"
+a05_UNIQUEDB$align_pid_rc <- "NA"
+a05_UNIQUEDB$nmismatch_forward <- "NA"
+a05_UNIQUEDB$nmismatch_forward_clamp <- "NA"
+a05_UNIQUEDB$nmismatch_reverse_rc <- "NA"
+a05_UNIQUEDB$nmismatch_reverse_clamp_rc <- "NA"
+a05_UNIQUEDB$nmismatch_forward_rc <- "NA"
+a05_UNIQUEDB$nmismatch_forward_clamp_rc <- "NA"
+a05_UNIQUEDB$nmismatch_reverse <- "NA"
+a05_UNIQUEDB$nmismatch_reverse_clamp <- "NA"
 
 
-### Other desired pre-built functions
-If there are any other scripts that already exist that we'd like to use, paste those here (after logging an issue). Make sure to record their source and appropriate citation, especially if these are fully external to Maine eDNA
+for (i in 1:dim(a05_UNIQUEDB)[1]){ 
+  print(i)
+  ## align to reference sequence, calculate basic stats, and save to a05_UNIQUEDBaframe
+  temp_align <- pairwiseAlignment(ref_seq, target_fastas[i], gapOpening = 10, gapExtension = 4, type="global", scoreOnly=FALSE) #align with pairwiseAlignment()
+  a05_UNIQUEDB$align_pover[i] <- nchar(temp_align)/ref_seq_length # calculate percent of reference sequence aligned to the target
+  a05_UNIQUEDB$align_pid[i] <- pid(temp_align)  # calculate percent identity of aligned reference sequence to the target
+  temp_align <- "NA" #reset the variable
+  
+  ## align as above, but to the reverse complement
+  temp_align_rc <- pairwiseAlignment(ref_seq_rc, target_fastas[i],  gapOpening = 10, gapExtension = 4, type="global", scoreOnly=FALSE) #align with pairwiseAlignment()
+  a05_UNIQUEDB$align_pover_rc[i] <- nchar(temp_align_rc)/ref_seq_length # calculate percent of reference sequence aligned to the target
+  a05_UNIQUEDB$align_pid_rc[i] <- pid(temp_align_rc)# calculate percent identity of aligned reference sequence to the target
+  temp_align_rc <- "NA" #reset the variable
+  
+  ## primer matching
+  test_string <- DNAString(as.character(target_fastas[i])) #matchPattern needs it in this format for some reason
+  #forward primer match
+  match_forward <- matchPattern(primer_forward, test_string, max.mismatch=6, with.indels=FALSE) #match the primer to the sequence
+  if (length(match_forward) == 1){ # if there is a match, fill in the following info
+    mismatch_forward <- do.call(rbind, mismatch(primer_forward, match_forward)) #locations of mismatches on the primer
+    a05_UNIQUEDB$nmismatch_forward[i] <- nmismatch(primer_forward, match_forward) #number of mismatches to the primer
+    a05_UNIQUEDB$nmismatch_forward_clamp[i] <- length(which(mismatch_forward > (length(primer_forward)-6))) #number of mismatches in gc_clamp
+  }
+  if (length(match_forward) > 1){
+    mismatch_forward <- do.call(rbind, mismatch(primer_forward, match_forward)) #locations of mismatches on the primer
+    temp_id <- which.min(rowSums(mismatch_forward < 6)) # find the index of the match with the smallest number of mismatches in the clamp
+    a05_UNIQUEDB$nmismatch_forward[i] <- nmismatch(primer_forward, match_forward[temp_id]) #number of mismatches to the primer
+    a05_UNIQUEDB$nmismatch_forward_clamp[i] <- length(which(mismatch_forward[temp_id,] < 6))
+    rm(temp_id)
+  }
+  
+  #reverse complement of forward primer
+  match_forward_rc <- matchPattern(primer_forward_rc, test_string, max.mismatch=6, with.indels=FALSE) #match the primer to the sequence
+  if (length(match_forward_rc) == 1){
+    mismatch_forward_rc <- do.call(rbind, mismatch(primer_forward_rc, match_forward_rc)) #locations of mismatches on the primer
+    a05_UNIQUEDB$nmismatch_forward_rc[i] <- nmismatch(primer_forward_rc, match_forward_rc) #number of mismatches to the primer
+    a05_UNIQUEDB$nmismatch_forward_clamp_rc[i] <- length(which(mismatch_forward_rc < 6))
+  }
+  if (length(match_forward_rc) > 1){
+    mismatch_forward_rc <- do.call(rbind, mismatch(primer_forward_rc, match_forward_rc)) #locations of mismatches on the primer
+    temp_id <- which.min(rowSums(mismatch_forward_rc < 6)) # find the index of the match with the smallest number of mismatches in the clamp
+    a05_UNIQUEDB$nmismatch_forward_rc[i] <- nmismatch(primer_forward_rc, match_forward_rc[temp_id]) #number of mismatches to the primer
+    a05_UNIQUEDB$nmismatch_forward_clamp_rc[i] <- length(which(mismatch_forward_rc[temp_id,] < 6))
+    rm(temp_id)
+  }
+  
+  #reverse primer
+  match_reverse <- matchPattern(primer_reverse, test_string, max.mismatch=6, with.indels=FALSE) #match the primer to the sequence
+  if (length(match_reverse) == 1){
+    mismatch_reverse <- do.call(rbind, mismatch(primer_reverse, match_reverse)) #locations of mismatches on the primer
+    a05_UNIQUEDB$nmismatch_reverse[i] <- nmismatch(primer_reverse, match_reverse) #number of mismatches to the primer
+    a05_UNIQUEDB$nmismatch_reverse_clamp[i] <- length(which(mismatch_reverse > (length(primer_reverse)-6))) #number of mismatches in gc_clamp
+  }
+  if (length(match_reverse) > 1){
+    mismatch_reverse <- do.call(rbind, mismatch(primer_reverse, match_reverse)) #locations of mismatches on the primer
+    temp_id <- which.min(rowSums(mismatch_reverse < 6)) # find the index of the match with the smallest number of mismatches in the clamp
+    a05_UNIQUEDB$nmismatch_reverse[i] <- nmismatch(primer_reverse, match_reverse[temp_id]) #number of mismatches to the primer
+    a05_UNIQUEDB$nmismatch_reverse_clamp[i] <- length(which(mismatch_reverse[temp_id,] < 6))
+    rm(temp_id)
+  }
+  
+  #reverse complement of reverse primer
+  match_reverse_rc <- matchPattern(primer_reverse_rc, test_string, max.mismatch=6, with.indels=FALSE) #match the primer to the sequence
+  if (length(match_reverse_rc) == 1){
+    mismatch_reverse_rc <- do.call(rbind, mismatch(primer_reverse_rc, match_reverse_rc)) #locations of mismatches on the primer
+    a05_UNIQUEDB$nmismatch_reverse_rc[i] <- nmismatch(primer_reverse_rc, match_reverse_rc) #number of mismatches to the primer
+    a05_UNIQUEDB$nmismatch_reverse_clamp_rc[i] <- length(which(mismatch_reverse_rc < 6))
+  }
+  if (length(match_reverse_rc) > 1){
+    mismatch_reverse_rc <- do.call(rbind, mismatch(primer_reverse_rc, match_reverse_rc)) #locations of mismatches on the primer
+    temp_id <- which.min(rowSums(mismatch_reverse_rc < 6)) # find the index of the match with the smallest number of mismatches in the clamp
+    a05_UNIQUEDB$nmismatch_reverse_rc[i] <- nmismatch(primer_reverse_rc, match_reverse_rc[temp_id]) #number of mismatches to the primer
+    a05_UNIQUEDB$nmismatch_reverse_clamp_rc[i] <- length(which(mismatch_reverse_rc[temp_id,] < 6))
+    rm(temp_id)
+  }
+  
+  test_string <-"NA"
+  match_forward <- "NA"
+  mismatch_forward <- "NA"
+  match_forward_rc <- "NA"
+  mismatch_forward_rc <- "NA"
+  match_reverse <- "NA"
+  mismatch_reverse <- "NA"
+  match_reverse_rc <- "NA"
+  mismatch_reverse_rc <- "NA"
+}
 
-## Workflow Outline
-The following steps outline is purely a guide suggestion of layout and not meant to be restrictive or the end-all-be-all of organization. Expand or adjust code and rearrange sections as needed, just log the changes in issues and comments and do your best to make sure any moves won't have negative downstream effects in terms of code order
+a06_UniqueDB_withAlignments <- a05_UNIQUEDB
+write.csv(a06_UniqueDB_withAlignments, file.path(output_folder, "a06_UniqueDB_withAlignments.csv"), row.names = FALSE)
 
-## Step 0: Installing and Initializing Packages, Apps, and Other Required Tools
-Put install/library checks of packages and anything else here (including non-data files needed to run a function) and please comment what the package or tool is doing.
+```
 
-## Step 1: Importing/Identifying Inputs
-Add functions here to import csv lists (or other format) of species lists or other import-aligned functions
+```{r update_species_summary}
+## format primer alignment fields
+a06_UniqueDB_withAlignments$nmismatch_forward <- as.numeric(a06_UniqueDB_withAlignments$nmismatch_forward) # format
+a06_UniqueDB_withAlignments$nmismatch_forward_clamp <- as.numeric(a06_UniqueDB_withAlignments$nmismatch_forward_clamp)# format
+a06_UniqueDB_withAlignments$nmismatch_reverse_rc <- as.numeric(a06_UniqueDB_withAlignments$nmismatch_reverse_rc)# format
+a06_UniqueDB_withAlignments$nmismatch_reverse_clamp_rc <- as.numeric(a06_UniqueDB_withAlignments$nmismatch_reverse_clamp_rc)# format
+a06_UniqueDB_withAlignments$nmismatch_forward_rc <- as.numeric(a06_UniqueDB_withAlignments$nmismatch_forward_rc)# format
+a06_UniqueDB_withAlignments$nmismatch_forward_clamp_rc <- as.numeric(a06_UniqueDB_withAlignments$nmismatch_forward_clamp_rc)# format
+a06_UniqueDB_withAlignments$nmismatch_reverse <- as.numeric(a06_UniqueDB_withAlignments$nmismatch_reverse)# format
+a06_UniqueDB_withAlignments$nmismatch_reverse_clamp <- as.numeric(a06_UniqueDB_withAlignments$nmismatch_reverse_clamp)# format
 
-## Step 2: Cleaning Input
-If we want any built in cleaning functions or name correcters, these should be next
+## count total mismatches for both potential primer pairs & then choose the primer pair with fewest mismatches
+a06_UniqueDB_withAlignments$nmismatch_pair_forward <- a06_UniqueDB_withAlignments$nmismatch_forward + a06_UniqueDB_withAlignments$nmismatch_reverse_rc # count mismatches in forward/reverse_rc
+a06_UniqueDB_withAlignments$nmismatch_pair_forward_rc <- a06_UniqueDB_withAlignments$nmismatch_forward_rc + a06_UniqueDB_withAlignments$nmismatch_reverse #count mismatches in forward_rc/reverse
 
-## Step 3: Prepare GenBank Search
-Creating the 12S search terms, voucher regular expression search, etc.
+a06_UniqueDB_withAlignments$primer_pair <- "NA" #figure out which primer pair to choose (forward, forward_rc, or tie) with following decision tree, if no primer match keep as "NA"
 
-## Step 4: GenBank Searches
+for (x in 1:dim(a06_UniqueDB_withAlignments)[1]) {
+  if (!is.na(a06_UniqueDB_withAlignments$nmismatch_pair_forward[x]) &&  is.na(a06_UniqueDB_withAlignments$nmismatch_pair_forward_rc[x])) { #if forward primer match exists and forward_rc match doesn't, use forward
+   a06_UniqueDB_withAlignments$primer_pair[x] <- "forward" #use the forward primer
+  } else if (is.na(a06_UniqueDB_withAlignments$nmismatch_pair_forward[x]) && !is.na(a06_UniqueDB_withAlignments$nmismatch_pair_forward_rc[x])) { # forward primer match doesn't exist and forward_rc match does, use forward_rc
+    a06_UniqueDB_withAlignments$primer_pair[x] <- "forward_rc"  #use the forward_rc primer
+  } else if (is.na(a06_UniqueDB_withAlignments$nmismatch_pair_forward[x]) &&  is.na(a06_UniqueDB_withAlignments$nmismatch_pair_forward_rc[x])) { # neither primer matches, use none
+    a06_UniqueDB_withAlignments$primer_pair[x] <- "NA" 
+  } else if (!is.na(a06_UniqueDB_withAlignments$nmismatch_pair_forward[x]) && !is.na(a06_UniqueDB_withAlignments$nmismatch_pair_forward_rc[x]) && a06_UniqueDB_withAlignments$nmismatch_pair_forward[x] < a06_UniqueDB_withAlignments$nmismatch_pair_forward_rc[x]) { # if both matches exist, choose forward if less mismatches
+    a06_UniqueDB_withAlignments$primer_pair <- "forward" 
+  } else if (!is.na(a06_UniqueDB_withAlignments$nmismatch_pair_forward[x]) && !is.na(a06_UniqueDB_withAlignments$nmismatch_pair_forward_rc[x]) && a06_UniqueDB_withAlignments$nmismatch_pair_forward_rc[x] < a06_UniqueDB_withAlignments$nmismatch_pair_forward[x]) { # if both matches exist, choose forward_rc if less mismatches
+    a06_UniqueDB_withAlignments$primer_pair[x] <- "forward_rc" 
+  } else if (!is.na(a06_UniqueDB_withAlignments$nmismatch_pair_forward[x]) && !is.na(a06_UniqueDB_withAlignments$nmismatch_pair_forward_rc[x]) && a06_UniqueDB_withAlignments$nmismatch_pair_forward[x] == a06_UniqueDB_withAlignments$nmismatch_pair_forward_rc[x]) { # if both matches exist and equal mismatches,
+    a06_UniqueDB_withAlignments$primer_pair <- "tie" 
+  }
+}
 
-## Step 5: Filter Search Results
-De-duplicate results and trim based on bp length
+a06_UniqueDB_withAlignments$primer_pair <- as.factor(a06_UniqueDB_withAlignments$primer_pair) # make primer_pair field a factor
+a06_UniqueDB_withAlignments$align_pover_final <- "NA"
+a06_UniqueDB_withAlignments$align_pid_final <- "NA"
+a06_UniqueDB_withAlignments$nmismatch_forward_final <- "NA"
+a06_UniqueDB_withAlignments$nmismatch_forward_clamp_final <- "NA"
+a06_UniqueDB_withAlignments$nmismatch_reverse_final <- "NA"
+a06_UniqueDB_withAlignments$nmismatch_reverse_clamp_final <- "NA"
 
-## Step 6: Create Taxonomy Dataframe
+for (w in 1:dim(a06_UniqueDB_withAlignments)[1]){ # if best primer pair is forward or a tie, update with primer match info (need to state that will go with forward pair if tie somewhere)
+  if (a06_UniqueDB_withAlignments$primer_pair[w] == "forward" || a06_UniqueDB_withAlignments$primer_pair[w] == "tie"){
+    a06_UniqueDB_withAlignments$nmismatch_forward_final[w] <- a06_UniqueDB_withAlignments$nmismatch_forward[w]
+    a06_UniqueDB_withAlignments$nmismatch_forward_clamp_final[w] <- a06_UniqueDB_withAlignments$nmismatch_forward_clamp[w]
+    a06_UniqueDB_withAlignments$nmismatch_reverse_final[w] <- a06_UniqueDB_withAlignments$nmismatch_reverse_rc[w]
+    a06_UniqueDB_withAlignments$nmismatch_reverse_clamp_final[w] <- a06_UniqueDB_withAlignments$nmismatch_reverse_clamp_rc[w]
+  } else if (a06_UniqueDB_withAlignments$primer_pair[w] == "forward_rc"){ # if best primer pair is forward_rc, update with primer match info
+    a06_UniqueDB_withAlignments$nmismatch_forward_final[w] <- a06_UniqueDB_withAlignments$nmismatch_forward_rc[w]
+    a06_UniqueDB_withAlignments$nmismatch_forward_clamp_final[w] <- a06_UniqueDB_withAlignments$nmismatch_forward_clamp_rc[w]
+    a06_UniqueDB_withAlignments$nmismatch_reverse_final[w] <- a06_UniqueDB_withAlignments$nmismatch_reverse[w]
+    a06_UniqueDB_withAlignments$nmismatch_reverse_clamp_final[w] <- a06_UniqueDB_withAlignments$nmismatch_reverse_clamp[w]
+  }
+}
 
-## Step 7: Create Sequence Files
+#Count reference sequences by species
+counts_species <- as.data.frame(table(a06_UniqueDB_withAlignments$species)) #count the number of unique reference sequences per species
+colnames(counts_species) <- c("species", "unique_target_seqs_n") #format
+a03_BESTNAMES <- merge(a03_BESTNAMES, counts_species, by.x= "search_name", by.y="species", all.x=TRUE, all.y=TRUE) # update the summary database with reference sequence counts
 
-## Step 8: Neighbor-Joining Phylogeny
+#Count reference sequences that aligning to primer with <6 mismatches by species
+matched_refs <- (a06_UniqueDB_withAlignments[a06_UniqueDB_withAlignments$primer_pair != "NA",]) # sequences with a primer pair match
+counts_species_matched <- as.data.frame(table(matched_refs$species)) # count number of sequences matching to a primer by species
+colnames(counts_species_matched) <- c("species", "primer_matched_n") #format
+a03_BESTNAMES <- merge(a03_BESTNAMES, counts_species_matched, by.x= "search_name", by.y="species", all.x=TRUE, all.y=TRUE) # add count to summary database
+
+#Reference sequences aligning to primer with <6 mismatches and additional threshold(s)
+threshold1 <- 1
+matched_refs_threshold1 <- matched_refs[(matched_refs$nmismatch_forward_clamp_final <= threshold1) && (matched_refs$nmismatch_reverse_clamp_final <= threshold1),]
+counts_species_threshold1 <- as.data.frame(table(matched_refs_threshold1$species))
+colnames(counts_species_threshold1) <- c("species", "clamp_threshold1_n") #format
+a03_BESTNAMES <- merge(a03_BESTNAMES, counts_species_threshold1, by.x= "search_name", by.y="species", all.x=TRUE, all.y=TRUE)
+
+threshold2 <- 2
+matched_refs_threshold2 <- matched_refs[(matched_refs$nmismatch_forward_clamp_final <= threshold2) && (matched_refs$nmismatch_reverse_clamp_final <= threshold2),]
+counts_species_threshold2 <- as.data.frame(table(matched_refs_threshold2$species))
+colnames(counts_species_threshold2) <- c("species", "clamp_threshold2_n") #format
+a03_BESTNAMES <- merge(a03_BESTNAMES,counts_species_threshold2, by.x= "search_name", by.y="species", all.x=TRUE, all.y=TRUE)
+
+#add in duplicates information to best_names
+a03_BESTNAMES$dup_accessions <- "na"
+a03_BESTNAMES$dup_species <- "na"
+a03_BESTNAMES$dup_species_n <- "na"
+for (b in 1:dim(a03_BESTNAMES)[1]){
+  dup_accessions <- paste(a06_UniqueDB_withAlignments[which(a06_UniqueDB_withAlignments$species == a03_BESTNAMES$search_name[b]), "duplicate_accessions"], collapse="|")
+  dup_accessions <- unlist(strsplit(dup_accessions, split="\\|"))
+  dup_accessions_unique <- paste(unique(dup_accessions), collapse="|")
+  
+  dup_species <- paste(a06_UniqueDB_withAlignments[which(a06_UniqueDB_withAlignments$species == a03_BESTNAMES$search_name[b]), "duplicate_species"], collapse="|")
+  dup_species <- unlist(strsplit(dup_species, split="\\|"))
+  dup_species_unique <- unique(dup_species)
+  
+    if (length(dup_accessions)>0){
+  a03_BESTNAMES$dup_accessions[b]<-dup_accessions_unique
+  a03_BESTNAMES$dup_species[b]<- paste(dup_species_unique, collapse="|")
+  a03_BESTNAMES$dup_species_n[b]<- length(dup_species_unique)
+  }
+  
+  #reset variables
+  rm(dup_accessions)
+  rm(dup_species)
+}
+
+a03_BESTNAMES$n_target_all <- a03_BESTNAMES$n_target + a03_BESTNAMES$n_mitogenome
+write.csv(a03_BESTNAMES, file.path(output_folder, "a03_BESTNAMES_v3.csv"), row.names=FALSE)
+
+n_species <- dim(a03_BESTNAMES)[1]
+n_species_target <- length(which(a03_BESTNAMES$n_target_all>0))
+n_species_primermatch <- length(which(a03_BESTNAMES$primer_matched_n>0)) 
+n_species_clamp1 <- length(which(a03_BESTNAMES$clamp_threshold1_n>0))
+n_species_clamp2 <- length(which(a03_BESTNAMES$clamp_threshold2_n>0)) 
+
+n_species; n_species_target; n_species_primermatch; n_species_clamp1; n_species_clamp2
+```
+
+
+
+
 
