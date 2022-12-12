@@ -21,9 +21,9 @@ Anything inside the gravemarks will be read as code. To add a label or descripto
 For more information on RMarkdown, [dataquest.io](https://www.dataquest.io/blog/r-markdown-guide-cheatsheet/) has a good cheat sheet.
 
 ### Workflow-in-Progress
-OVERVIEW OF CHUNKS
-$define_variables - YOU MUST ENTER THESE IN THE SET_VARIABLES CHUNK, get these in order before you run this program
-    *entrez API key - get one here https://ncbiinsights.ncbi.nlm.nih.gov/2017/11/02/new-api-keys-for-the-e-utilities/
+OVERVIEW OF CHUNKS ADDED BY ERIN
+$define_variables - YOU MUST DEFINE THESE VARIABLES BEFORE YOU START!!! 
+    *entrez API key - get your own here https://ncbiinsights.ncbi.nlm.nih.gov/2017/11/02/new-api-keys-for-the-e-utilities/
     *species list (must have species names in column labeled exactly "source_binomial")          
     *target locus (choices: ATP6, ATP8, COI, COII, COIII, CYTB, D_loop, rRNA_12S, rRNA_16S, & all NDS & tRNAs)
     *primer sequences in 5'-3' direction
@@ -40,20 +40,20 @@ $update_species_summary - summarizes target sequence availability, primer alignm
 
     
 ```{r define_variables}
-entrez_key <- "7c5ac035201a1835b5a81de1b74ec8613d08" #GET YOUR OWN ENTREZ KEY 
-species_list <- "data/maine_vert_subset.csv" 
-locus = "rRNA_12S" 
-primer_forward <- "GTCGGTAAAACTCGTGCCAGC" # MiFish-U-F 
-primer_reverse <- "CATAGTGGGGTATCTAATCCCAGTTTG" # MiFish-U-R
-ref_seq <- "GCCGGTAAAACTCGTGCCAGCAACCGCGGTTAAACGAGAGGCTCTAGTTGATATACTACGGCGTAAAGGGTGGTTAAGGAACAATGTAAAATAAAGCCAAACGGCCCTTTAACTGTTATACGCTTTTAGATGCTAGAGGCCCAAACACGAAAGTAGCTTTAAATTAATTACCTGAACCCACGAAAGCTAAGAAACAAACTGGGATTAGATACCCCACTATGC" #zebrafish MiFish reference
-output_folder <- "test_MaineVerts_MiFish-2022-11-22"
+entrez_key <- "7c5ac035201a1835b5a81de1b74ec8613d08" #GET YOUR OWN ENTREZ KEY AND PUT IT HERE!!!!!
+species_list <- "data/gom_inverts_2022-11-27.csv" #where your species list lives
+locus = "COI" #name of target locus, see workflow notes above for your choices
+primer_forward <- "GGWACWGGWTGAACWGTWTAYCCYCC" # enter your forward primer sequence in 5'-3' direction, this is Leray mCOIntF which doesn't seem to be working with match :(
+primer_reverse <- "TANACYTCNGGRTGNCCRAARAAYCA" # enter your reverse primer sequence in 5'-3 direction, this is Leray jgHCO2190 which doesn't seem to be working with match :(
+ref_seq <- "nnnnn" #reference sequence
+output_folder <- "gom_inverts_2022-11-27"
 ```
 
 ```{r load_packages_and_terms}
 library(taxize) #checks taxonomy
 library(rentrez) #queries ENTREZ databases and downloads accessions
 library(AnnotationBustR) #finds longest accessions, slice genes from mitogenomes
-library(reutils) #oter packages need it
+library(reutils) #other packages need it
 library(msa) #multiple sequence alignment algorithms ClustalW and Muscle
 library(ape) #convert fasta, fastq, etc.
 library(genbankr) #parse genbank files
@@ -91,6 +91,7 @@ target_locus_searchterm <- paste(as.vector(target_locus_synonyms$Terms), collaps
 a02_NAMECHECK <- gnr_resolve(a01_INPUT$source_binomial, best_match_only = TRUE, canonical = TRUE, fields="all") # check animal species names using the Global Names Resolver from the Encyclopedia of Life
 a03_BESTNAMES <- merge(a01_INPUT, a02_NAMECHECK[,c("user_supplied_name", "submitted_name","matched_name2")], by.x=c("source_binomial"), by.y=c("user_supplied_name"), all.x=TRUE) #get the best name but keep previous names (fix misspellings, use most recently accepted, etc.)
 a03_BESTNAMES$search_name <- ifelse(is.na(a03_BESTNAMES$matched_name2), a03_BESTNAMES$source_binomial, a03_BESTNAMES$matched_name2) # use the check & corrected name if available, if not then use the original source name
+a03_BESTNAMES <- a03_BESTNAMES[!duplicated(a03_BESTNAMES$search_name),]
 write.csv(a02_NAMECHECK, file.path(output_folder, "a02_NAMECHECK.csv"), row.names=FALSE)
 write.csv(a03_BESTNAMES, file.path(output_folder, "a03_BESTNAMES_v1.csv"), row.names=FALSE)
 ```
@@ -130,12 +131,14 @@ write.csv(a03_BESTNAMES, file.path(output_folder, "a03_BESTNAMES_v2.csv"), row.n
 ```
 
 ```{r scrape_targets}
+
 a04_REFDB <- data.frame(seq_header=NA, sequence=NA, seq_accession=NA, type=NA, species=NA) #create the database skeleton
+a03_BESTNAMES$n_target <- as.numeric(a03_BESTNAMES$n_target) #format
 
 # add target accession sequences to database
-for (j in 1:dim(a03_BESTNAMES)[1]){ #for every good species name
+for (j in 1715:dim(a03_BESTNAMES)[1]){ #for every good species name
   print(j) #counter
-  if (a03_BESTNAMES$n_target[j]>0 && a03_BESTNAMES$n_target[j]<500) { # scrape GenBank target sequences if available, but don't do Aythya affinis (Lesser Scaup) because bc server doesn't allow this
+  if (a03_BESTNAMES$n_target[j]>0 && a03_BESTNAMES$n_target[j]<200) { # scrape GenBank target sequences if available, but don't do Aythya affinis (Lesser Scaup) because bc server doesn't allow this
     seqs_target <- entrez_fetch(db="nuccore", id=c(unlist(strsplit(a03_BESTNAMES$ids_target[j], split="\\|"))), rettype="fasta") # fetch all the sequences from Genbank
     write(seqs_target, file.path(output_folder, paste(a03_BESTNAMES$search_name[j], paste0(locus, ".fasta")))) # formatting - write out the sequences 
     fasta_target <- readDNAStringSet(file.path(output_folder, paste(a03_BESTNAMES$search_name[j], paste0(locus, ".fasta"))), format="fasta") #formatting - read them back in as fasta
@@ -153,18 +156,19 @@ for (j in 1:dim(a03_BESTNAMES)[1]){ #for every good species name
     sequence <- "na"
     seq_accession <- "na"
     tempDB  <- "na"
+    Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
     }
 } 
+
 ```
 
 ```{r scrape_mitogenomes}
 # add mitogenome scrapes to database (skip Canis lupus 151, Hirundo rustica 358)
 a03_BESTNAMES$n_mitogenome <- as.numeric(a03_BESTNAMES$n_mitogenome) #format
-a03_BESTNAMES$n_target <- as.numeric(a03_BESTNAMES$n_target) #format
 
-for (k in 1:dim(a03_BESTNAMES)[1]) { #for every good species name
+for (k in 1599:dim(a03_BESTNAMES)[1]) { #for every good species name
   print(k) #counter
-  if (a03_BESTNAMES$n_mitogenome[k]>0 && a03_BESTNAMES$n_mitogenome[k]<150) { #scrape Genbank mitogenomes if available, skip species with lots of mitogenomes bc server doesn't allow this
+  if (a03_BESTNAMES$n_mitogenome[k]>0 && a03_BESTNAMES$n_mitogenome[k]<100) { #scrape Genbank mitogenomes if available, skip species with lots of mitogenomes bc server doesn't allow this
     mito_ids <- unlist(strsplit(a03_BESTNAMES$ids_mitogenome[k], split="\\|")) # format mitogenome ids
     mito_accessions <- entrez_fetch(mito_ids, db="nuccore", rettype="acc") # find the accession number for each mitogenome id
     mito_accessions <- unlist(strsplit(mito_accessions, split="\n")) # format accession numbers
@@ -182,21 +186,24 @@ for (k in 1:dim(a03_BESTNAMES)[1]) { #for every good species name
           new_row <- c(paste(names(target_seq),"mitochondrion", mito_accessions[m], sep=" "), paste(target_seq), mito_accessions[m], "scrape", species=a03_BESTNAMES$search_name[k])
         }
         a04_REFDB <- rbind(a04_REFDB, new_row) # update the database
-    
+        Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
         # reset loop variables
         rm(gb, target_feature, target_strand, target_seq, scrapedseq_binomial, scraped_seq, scraped_range, new_row)
-        
+        Sys.sleep(0.5) #slow down request to the Entrez server or you'll get kicked out
         } # close m loop (each "m" accession m per species "k")
     } # close species k with mitogenomes if statement
   # reset loop variables
   rm(mito_ids, mito_accessions)
+  Sys.sleep(0.5) #slow down request to the Entrez server or you'll get kicked out
 } # close for each species k loop
 
 a04_REFDB <- a04_REFDB[-1,] #format - remove the top row of NAs
 write.csv(a04_REFDB, file.path(output_folder, "a04_REFDB.csv"), row.names=FALSE)
+
 ```
 
 ```{r remove_duplicates}
+
 a05_UNIQUEDB <- a04_REFDB[!duplicated(a04_REFDB$sequence),] #remove duplicates
 for (i in  1:dim(a05_UNIQUEDB)[1]){ # for every row in the unique db file
   dups <- subset(a04_REFDB, sequence == a05_UNIQUEDB$sequence[i]) # find identical sequences in the fill db file 
@@ -205,9 +212,11 @@ for (i in  1:dim(a05_UNIQUEDB)[1]){ # for every row in the unique db file
 }
 
 write.csv(a05_UNIQUEDB, file.path(output_folder, "a05_UniqueRefDB.csv"), row.names=FALSE)
+
 ```
 
 ```{r align_unique_seqs}
+
 rownames(a05_UNIQUEDB) <- 1:dim(a05_UNIQUEDB)[1] #format
 a05_UNIQUEDB$fasta <- paste(paste0(">",a05_UNIQUEDB$seq_header), a05_UNIQUEDB$sequence, sep="\n") #format fastas
 write(as.character(a05_UNIQUEDB$fasta), file.path(output_folder,"db_seqs.fasta")) # formatting - write out the sequences 
@@ -321,6 +330,7 @@ write.csv(a06_UniqueDB_withAlignments, file.path(output_folder, "a06_UniqueDB_wi
 ```
 
 ```{r update_species_summary}
+
 ## format primer alignment fields
 a06_UniqueDB_withAlignments$nmismatch_forward <- as.numeric(a06_UniqueDB_withAlignments$nmismatch_forward) # format
 a06_UniqueDB_withAlignments$nmismatch_forward_clamp <- as.numeric(a06_UniqueDB_withAlignments$nmismatch_forward_clamp)# format
