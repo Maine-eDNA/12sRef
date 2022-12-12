@@ -136,7 +136,7 @@ a04_REFDB <- data.frame(seq_header=NA, sequence=NA, seq_accession=NA, type=NA, s
 a03_BESTNAMES$n_target <- as.numeric(a03_BESTNAMES$n_target) #format
 
 # add target accession sequences to database
-for (j in 1715:dim(a03_BESTNAMES)[1]){ #for every good species name
+for (j in 1:dim(a03_BESTNAMES)[1]){ #for every good species name
   print(j) #counter
   if (a03_BESTNAMES$n_target[j]>0 && a03_BESTNAMES$n_target[j]<200) { # scrape GenBank target sequences if available, but don't do Aythya affinis (Lesser Scaup) because bc server doesn't allow this
     seqs_target <- entrez_fetch(db="nuccore", id=c(unlist(strsplit(a03_BESTNAMES$ids_target[j], split="\\|"))), rettype="fasta") # fetch all the sequences from Genbank
@@ -166,7 +166,7 @@ for (j in 1715:dim(a03_BESTNAMES)[1]){ #for every good species name
 # add mitogenome scrapes to database (skip Canis lupus 151, Hirundo rustica 358)
 a03_BESTNAMES$n_mitogenome <- as.numeric(a03_BESTNAMES$n_mitogenome) #format
 
-for (k in 1599:dim(a03_BESTNAMES)[1]) { #for every good species name
+for (k in 1:dim(a03_BESTNAMES)[1]) { #for every good species name
   print(k) #counter
   if (a03_BESTNAMES$n_mitogenome[k]>0 && a03_BESTNAMES$n_mitogenome[k]<100) { #scrape Genbank mitogenomes if available, skip species with lots of mitogenomes bc server doesn't allow this
     mito_ids <- unlist(strsplit(a03_BESTNAMES$ids_mitogenome[k], split="\\|")) # format mitogenome ids
