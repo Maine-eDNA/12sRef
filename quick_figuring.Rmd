@@ -1,0 +1,230 @@
+---
+title: "Quick reference library and gap analysis, Erin Grey 2023-08-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+### UPDATE EACH OF THESE FOUR VARIABLES FOR YOUR ANALYSIS
+```{r define_variables}
+entrez_key <- "7c5ac035201a1835b5a81de1b74ec8613d08" #GET YOUR OWN ENTREZ KEY AND PUT IT HERE!!!!!
+species_list <- "data/gom_inverts_2022-11-27.csv" #where your species list lives
+locus = "COI" #name of target locus, see workflow notes above for your choices
+output_folder <- "gom_inverts_2023-08-03" #name of your output folderchange this every time
+```
+
+
+##The rest of this scripts should just run itself. Hardest part is getting the libraries intalled on your computer.
+```{r load_packages_and_terms}
+library(taxize) #checks taxonomy
+library(rentrez) #queries ENTREZ databases and downloads accessions
+library(AnnotationBustR) #finds longest accessions, slice genes from mitogenomes
+library(reutils) #other packages need it
+library(ape) #convert fasta, fastq, etc.
+library(Biostrings)
+library(genbankr) #parse genbank files
+library(ggplot2) #plots
+
+set_entrez_key(entrez_key) #set the Entrez API key
+a01_INPUT <- read.csv(species_list, header=TRUE) # load the species list
+dir.create(output_folder)
+
+# create ENTREZ Search terms
+data(mtDNAterms) #AnnotationBustR's list of synonyms for different loci
+more_12Ssynonyms <- data.frame(Locus="rRNA_12S", Type="rRNA", Name= "small ribosomal RNA subunit RNA") # other synonyms that we find go here and get added to AnnotationBustR's list
+mtDNAterms <- rbind(mtDNAterms, more_12Ssynonyms) #format
+target_locus_synonyms <- mtDNAterms[mtDNAterms$Locus==locus,] #the target synonyms
+target_locus_synonyms$Terms <- 
+    paste0("OR ", target_locus_synonyms$Name, "[TITL]") # format for ENTREZ search terms
+target_locus_synonyms$Terms[1] <- 
+    paste0("AND (", target_locus_synonyms$Name[1], "[TITL]") # first term starts with "AND ("
+target_locus_synonyms$Terms[dim(target_locus_synonyms)[1]] <- 
+    paste0("OR ",   target_locus_synonyms$Name[dim(target_locus_synonyms)[1]], "[TITL])") #last term ends with a ")"
+target_locus_searchterm <- paste(as.vector(target_locus_synonyms$Terms), collapse=" ") # the big ENTREZ search term
+
+```
+
+```{r name_check}
+a02_NAMECHECK <- gnr_resolve(a01_INPUT$source_binomial, best_match_only = TRUE, canonical = TRUE, fields="all") # check animal species names using the Global Names Resolver from the Encyclopedia of Life
+a03_BESTNAMES <- merge(a01_INPUT, a02_NAMECHECK[,c("user_supplied_name", "submitted_name","matched_name2")], by.x=c("source_binomial"), by.y=c("user_supplied_name"), all.x=TRUE) #get the best name but keep previous names (fix misspellings, use most recently accepted, etc.)
+a03_BESTNAMES$search_name <- ifelse(is.na(a03_BESTNAMES$matched_name2), a03_BESTNAMES$source_binomial, a03_BESTNAMES$matched_name2) # use the check & corrected name if available, if not then use the original source name
+a03_BESTNAMES <- a03_BESTNAMES[!duplicated(a03_BESTNAMES$search_name),]
+write.csv(a02_NAMECHECK, file.path(output_folder, "a02_NAMECHECK.csv"), row.names=FALSE)
+write.csv(a03_BESTNAMES, file.path(output_folder, "a03_BESTNAMES_v1.csv"), row.names=FALSE)
+```
+
+```{r entrez_search}
+a03_BESTNAMES$n_mitogenome <- "na" #number of mitogenome accessions
+a03_BESTNAMES$n_target <- "na" #number of target accessions
+a03_BESTNAMES$ids_mitogenome <- "na" #mitogenome GI numbers
+a03_BESTNAMES$ids_target <- "na" #target accession GI numbers
+
+#search ENTREZ nucleotide database ("nucleotide"="nuccore" database)
+for (i in 1:dim(a03_BESTNAMES)[1]){
+  print(i) #counter
+  # define search terms for species
+  search_name <- paste0(a03_BESTNAMES$search_name[i],"[ORGN]") #format species name for ENTREZ search
+  search_term <- paste(paste0(a03_BESTNAMES$search_name[i],"[ORGN]"), target_locus_searchterm, collapse=" ") #concatenate species and 12S search terms into one search term
+  
+  # search genbank for all accessions, mitogenomes, and target loci accessions
+  mitogenomes <- entrez_search(db="nucleotide", term <- paste(search_name, "AND mitochondrion[TITL] AND complete genome[TITL]"), retmax=999999) # search for species mitogenome accessions
+   Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
+  targets <- entrez_search(db="nucleotide", term <- search_term, retmax=999999) # search all species 12S accessions
+   Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
+
+  # update the the BESTNAMES dataframe of all accession types and associated ids (= GI numbers)
+  a03_BESTNAMES$n_mitogenome[i] <-mitogenomes$count
+  a03_BESTNAMES$n_target[i] <-targets$count
+  a03_BESTNAMES$ids_mitogenome[i] <-paste(mitogenomes$ids, collapse="|")
+  a03_BESTNAMES$ids_target[i] <- paste(targets$ids, collapse="|")
+  
+  # reset loop variables
+  mitogenomes <- "na"
+  targets <- "na"
+  search_name <- "na"
+  search_term <- "na"
+}
+write.csv(a03_BESTNAMES, file.path(output_folder, "a03_BESTNAMES_v2.csv"), row.names = FALSE) # write out the mitogenome and target accessions for each species
+```
+
+```{r scrape_targets}
+a04_REFDB <- data.frame(seq_header=NA, sequence=NA, seq_accession=NA, type=NA, species=NA) #create the database skeleton
+a03_BESTNAMES$n_target <- as.numeric(a03_BESTNAMES$n_target) #format
+
+# add target accession sequences to database
+for (j in 1:dim(a03_BESTNAMES)[1]){ #for every good species name
+  print(j) #counter
+     # scrape GenBank target sequences if available, but skip if >= 100 targets 
+    if (a03_BESTNAMES$n_target[j]>0 && a03_BESTNAMES$n_target[j]<100) { 
+     ids <- c(unlist(strsplit(a03_BESTNAMES$ids_target[j], split="\\|")))
+     seqs_target <- entrez_fetch(db="nuccore", id=ids, rettype="fasta") # fetch all accessions from GenBank
+      }
+     # if more than 200 accessions, randomly select 100
+    else if  (a03_BESTNAMES$n_target[j]>100) {      
+     ids <- sample(c(unlist(strsplit(a03_BESTNAMES$ids_target[j], split="\\|"))),100)
+     seqs_target <- entrez_fetch(db="nuccore", id=ids, rettype="fasta") # fetch 100 random from Genbank
+      }
+    if (seqs_target != "na"){
+    write(seqs_target, file.path(output_folder, paste(a03_BESTNAMES$search_name[j], paste0(locus, ".fasta")))) # formatting - write out the sequences 
+    fasta_target <- readDNAStringSet(file.path(output_folder, paste(a03_BESTNAMES$search_name[j], paste0(locus, ".fasta"))), format="fasta") #formatting - read them back in as fasta
+    seqs_target_accessions <- entrez_fetch(db="nuccore", id=ids, rettype="acc") # get accession numbers
+    seq_header <- names(fasta_target) #formatting
+    sequence <- paste(fasta_target) #formatting
+    seq_accession <- unlist(strsplit(seqs_target_accessions, split="\n")) # formatting
+    tempDB <- data.frame(seq_header, sequence, seq_accession, type="accession", species=a03_BESTNAMES$search_name[j]) # make a temporary database with all sequences, their header, accession number, etc.
+    a04_REFDB <- rbind(a04_REFDB, tempDB) # append temporary database to the full database
+        # reset loop variables
+    }
+    ids <- "na"
+    seqs_target <- "na"
+    fasta_target <- "na"
+    seqs_target_accessions <- "na"
+    seq_header <- "na"
+    sequence <- "na"
+    seq_accession <- "na"
+    tempDB  <- "na"
+    Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
+ } 
+
+```
+
+```{r scrape_mitogenomes}
+
+a03_BESTNAMES$n_mitogenome <- as.numeric(a03_BESTNAMES$n_mitogenome) #format
+for (k in 1:dim(a03_BESTNAMES)[1]) { #for every good species name
+  print(k) #counter
+  mito_ids <- "na"
+    if (a03_BESTNAMES$n_mitogenome[k]>0 && a03_BESTNAMES$n_mitogenome[k]<20) { #scrape Genbank mitogenomes if available, skip species with lots of mitogenomes bc server doesn't allow this
+  mito_ids <- unlist(strsplit(a03_BESTNAMES$ids_mitogenome[k], split="\\|")) # format mitogenome ids
+      }
+    else if (a03_BESTNAMES$n_mitogenome[k]>20) { 
+  mito_ids <- sample(unlist(strsplit(a03_BESTNAMES$ids_mitogenome[k], split="\\|")),20) # format mitogenome ids
+      }
+    if (mito_ids[1] != "na") {
+    mito_accessions <- entrez_fetch(mito_ids, db="nuccore", rettype="acc") # find the accession number for each mitogenome id
+    mito_accessions <- unlist(strsplit(mito_accessions, split="\n")) # format accession numbers
+      for (m in 1:length(mito_accessions)){ # loop through and scrape each mitogenome accession
+        gb <- readGenBank(GBAccession(mito_accessions[m])) # get the Genbank annotation for accession 
+        target_feature <- which(otherFeatures(gb)$product %in% as.character(target_locus_synonyms$Name)) # find target annotation metadata (note: use otherFeatures for for rRNAs, tRNAs, etc. and use genes(gb) for genes like COI, CYTB, NADH, etc.)
+        new_row <- c(paste("Unparsed mitochondrion", mito_accessions[m], sep=" "), "na", mito_accessions[m], "scrape", species=a03_BESTNAMES$search_name[k])
+        if(length(target_feature) > 0) { # if target feature is found in the parsed mitochondrial genome, find the sequence, otherwise say that its unparsed
+          target_range <- otherFeatures(gb)@ranges[target_feature] #extract the target range information
+          target_strand <-  otherFeatures(gb)@strand[target_feature] #extract the target strand information (+ or -)
+          target_seq <- subseq(getSeq(gb), start=target_range@start, width=target_range@width) #scrape the genome for target
+          scrapedseq_binomial <- names(target_seq) #get the binomial name
+          scraped_seq <- paste(target_seq) #format
+          scraped_range <- paste(target_range) #format
+          new_row <- c(paste(names(target_seq),"mitochondrion", mito_accessions[m], sep=" "), paste(target_seq), mito_accessions[m], "scrape", species=a03_BESTNAMES$search_name[k])
+        }
+        a04_REFDB <- rbind(a04_REFDB, new_row) # update the database
+        Sys.sleep(1) #slow down request to the Entrez server or you'll get kicked out
+        # reset loop variables
+        rm(gb, target_feature, target_strand, target_seq, scrapedseq_binomial, scraped_seq, scraped_range, new_row)
+        Sys.sleep(0.5) #slow down request to the Entrez server or you'll get kicked out
+        } # close m loop (each "m" accession m per species "k")
+    }
+  # reset loop variables
+  rm(mito_ids, mito_accessions)
+  Sys.sleep(0.5) #slow down request to the Entrez server or you'll get kicked out
+} # close for each species k loop
+
+a04_REFDB <- a04_REFDB[-1,] #format - remove the top row of NAs
+write.csv(a04_REFDB, file.path(output_folder, "a04_REFDB.csv"), row.names=FALSE)
+```
+
+```{r remove_duplicates}
+a05_UNIQUEDB <- a04_REFDB[!duplicated(a04_REFDB$sequence),] #remove duplicates
+for (i in  1:dim(a05_UNIQUEDB)[1]){ # for every row in the unique db file
+  dups <- subset(a04_REFDB, sequence == a05_UNIQUEDB$sequence[i]) # find identical sequences in the fill db file 
+  a05_UNIQUEDB$duplicate_accessions[i] <- paste(dups$seq_accession, collapse = "|") # paste all those accessions together into a new unique db field
+  a05_UNIQUEDB$duplicate_species[i] <- paste(dups[!duplicated(dups$species),"species"], collapse = "|")
+}
+
+write.csv(a05_UNIQUEDB, file.path(output_folder, "a05_UniqueRefDB.csv"), row.names=FALSE)
+```
+
+```{r update_species_summary}
+#Count reference sequences by species
+counts_species <- as.data.frame(table(a05_UNIQUEDB$species)) #count the number of unique reference sequences per species
+colnames(counts_species) <- c("species", "n_unique_seqs") #format
+a03_BESTNAMES <- merge(a03_BESTNAMES, counts_species, by.x= "search_name", by.y="species", all.x=TRUE, all.y=TRUE) # update the summary database with reference sequence counts
+
+#add in duplicates information to BESTNAMES
+a03_BESTNAMES$dup_accessions <- "na"
+a03_BESTNAMES$dup_species <- "na"
+a03_BESTNAMES$dup_species_n <- "na"
+
+for (b in 1:dim(a03_BESTNAMES)[1]){
+  dup_accessions <- paste(a05_UNIQUEDB[a05_UNIQUEDB$species == a03_BESTNAMES$search_name[b], "duplicate_accessions"], collapse="|")
+  dup_accessions <- unlist(strsplit(dup_accessions, split="\\|"))
+  dup_accessions_unique <- paste(unique(dup_accessions), collapse="|")
+  
+  dup_species <- paste(a05_UNIQUEDB[a05_UNIQUEDB$species == a03_BESTNAMES$search_name[b], "duplicate_species"], collapse="|")
+  dup_species <- unlist(strsplit(dup_species, split="\\|"))
+  dup_species_unique <- unique(dup_species)
+  
+    if (length(dup_accessions)>0){
+  a03_BESTNAMES$dup_accessions[b]<-dup_accessions_unique
+  a03_BESTNAMES$dup_species[b]<- paste(dup_species_unique, collapse="|")
+  a03_BESTNAMES$dup_species_n[b]<- length(dup_species_unique)
+  }
+  
+  #reset variables
+  rm(dup_accessions)
+  rm(dup_species)
+}
+
+a03_BESTNAMES$n_all_seqs <- a03_BESTNAMES$n_mitogenome + a03_BESTNAMES$n_target
+
+write.csv(a03_BESTNAMES, file.path(output_folder, "a03_BESTNAMES_v3.csv"), row.names=FALSE)
+
+n_species <- dim(a03_BESTNAMES)[1]; n_species_target <- length(which(a03_BESTNAMES$n_target_all>0))
+n_species; n_species_target
+```
+
+
+
+
+
