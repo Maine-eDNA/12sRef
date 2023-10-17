@@ -1,5 +1,5 @@
 ---
-title: "Quick reference library and gap analysis, Erin Grey 2023-08-04 *ADD FAMILY REP & TAXONOMY"
+title: "Quick reference library and gap analysis, Erin Grey 2023-10-17"
 output: html_document
 ---
 
@@ -12,8 +12,8 @@ knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
 entrez_key <- "7c5ac035201a1835b5a81de1b74ec8613d08" #GET YOUR OWN ENTREZ KEY AND PUT IT HERE!!!!!
 species_list <- "data/gom_inverts_2022-11-27.csv" #where your species list lives
 locus = "COI" #name of target locus, see workflow notes above for your choices
-output_folder <- "gom_inverts_2022-11-27" #name of your output folder every time
-family_list <- read.csv("data/Eukaryota_families_2023-07-12.csv") # list of eukaryote families, updated occasionally (see date in file name)
+output_folder <- "gom_inverts_2023-10-17" #name of your output folder every time
+order_list <- read.csv("MetazoaSpeciesByOrder.csv") # list of metazoan orders, updated occasionally (see date in file name)
 ```
 
 
