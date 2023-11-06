@@ -12,8 +12,8 @@ knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
 ```{r define_variables}
 entrez_key <- "7c5ac035201a1835b5a81de1b74ec8613d08" #GET YOUR OWN ENTREZ KEY AND PUT IT HERE!
 locus = "12S" #name of target locus, see workflow notes above for your choices
-output_folder <- "gom_inverts_2023-10-17" #name of your output folder every time
-species_list <- read.csv("gom_inverts_2023-10-17/a03_BESTNAMES_v1.csv") # your species list
+output_folder <- "maine_verts_12S_2023-11-06" #name of your output folder every time
+species_list <- read.csv("data/gom_inverts_2023-10-17/a03_BESTNAMES_v1.csv") # your species list
 order_list <- read.csv("MetazoaSpeciesByOrder_2023-09-19.csv") # list of metazoan orders
 ```
 
